@@ -11,6 +11,8 @@
 #include <AutoPID.h>  // found via arduino > sketch > include library > manage libraries 
 #include <AFMotor.h>
 
+//------------------------------------------------------------------------------
+
 // SENSOR PINS
 #define PIN_SENSOR_CSEL   23
 #define PIN_SENSOR_CLK    25
@@ -31,12 +33,17 @@
 // PID CONSTANTS
 #define PID_ANGLE_MAX (180)  // don't change.
 #define PID_ANGLE_MIN (-PID_ANGLE_MAX)  // don't change.
-#define PID_TIME_STEP (20)  // ms between PID updates.  too small and the motor will oscillate no matter what PID you choose.
+#define PID_TIME_STEP (50)  // ms between PID updates.  too small and the motor will oscillate no matter what PID you choose.
+
+#define DEFAULT_KP 1
+#define DEFAULT_KI 0.1
+#define DEFAULT_KD 0.01
 
 // motor tuning
-#define MOTOR_MINIMUM_POWER 70   // minimum adafruit PWM needed to move the motor.  must be >=0
 #define MOTOR_MAXIMUM_POWER 255  // maximum allowable PWM.  must be <=255
 
+
+//------------------------------------------------------------------------------
 
 // setup the motor global
 AF_DCMotor motor(1,MOTOR12_64KHZ);
@@ -47,9 +54,9 @@ double angle;
 double target;
 
 // PID tuning values
-double kp=1.0;
-double ki=0.01;
-double kd=0.001;
+double kp=DEFAULT_KP;
+double ki=DEFAULT_KI;
+double kd=DEFAULT_KD;
 
 // for output.  wildly changes PID results!
 int beVerbose=0;
@@ -60,24 +67,70 @@ double targetAdj;    // adjusted based on current angle
 double difference;   // suggested direction and force to move
 AutoPID myPID(&angleZero, &targetAdj, &difference, PID_ANGLE_MIN, PID_ANGLE_MAX, kp, ki, kd);
 
+int motorMinimumPower;
+
+//------------------------------------------------------------------------------
 
 void setup() {
   Serial.begin(57600);
   Serial.println("\n** START **");
-  
-  // start the motor not moving!
-  motor.run(RELEASE);
-  motor.setSpeed(0);
-
-  // pid setup
-  myPID.setTimeStep(PID_TIME_STEP);
 
   // sensor setup
   pinMode(PIN_SENSOR_CLK,OUTPUT);
   pinMode(PIN_SENSOR_CSEL,OUTPUT);
   pinMode(PIN_SENSOR_SD_OUT,INPUT);
+  
+  findMotorMinimum();
+
+  // pid setup
+  myPID.setTimeStep(PID_TIME_STEP);
+
+  Serial.println("\n** READY **");
 }
 
+
+// determine the smallest PID value that makes the motor move.
+void findMotorMinimum() {
+  motorMinimumPower=0;
+
+  // read the sensor
+  sourceAngle = sensor_update(PIN_SENSOR_CSEL,PIN_SENSOR_SD_OUT);
+  // TODO: check for error codes here.
+  double startAngle = sensor_angle(sourceAngle);
+  Serial.print("Start angle=");
+  Serial.println(startAngle);
+  
+  for(motorMinimumPower=0;motorMinimumPower<255;++motorMinimumPower) {
+    // try to move the motor
+    motor.run(FORWARD);
+    motor.setSpeed(motorMinimumPower);
+    // wait a bit for results
+    delay(20);
+
+    // read the sensor again
+    sourceAngle = sensor_update(PIN_SENSOR_CSEL,PIN_SENSOR_SD_OUT);
+    // TODO: check for error codes here.
+    double angleNow = sensor_angle(sourceAngle);
+
+    // be verbose
+    Serial.print("PWM ");
+    Serial.print(motorMinimumPower);
+    Serial.print(" > ");
+    Serial.println(angleNow);
+    
+    // if the motor has move more than a margin of error then we are good!
+    if(abs(angleNow-startAngle)>0.1) break;
+  }
+
+  if(motorMinimumPower==255) {
+    Serial.println("Nothing has moved at max power.  We have a problem.");
+    while(1);
+  }
+  
+  // start the motor not moving!
+  motor.run(RELEASE);
+  motor.setSpeed(0);
+}
 
 void loop() {
   // let the user dynamically adjust some values
@@ -119,7 +172,7 @@ void loop() {
   myPID.run();
 
   // scale the difference to compensate for the motor power requirements.
-  double differenceScaled = map(abs(difference),0,PID_ANGLE_MAX,MOTOR_MINIMUM_POWER,MOTOR_MAXIMUM_POWER);
+  double differenceScaled = map(abs(difference),0,PID_ANGLE_MAX,motorMinimumPower,255);
 
   // show some stats
   if(beVerbose) {
